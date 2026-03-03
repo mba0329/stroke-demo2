@@ -632,7 +632,6 @@ def main():
                 }
                 
                 st.success("✅ Analysis complete! View results in the **Results** tab.")
-                st.balloons()
     
     # TAB 3: Results
     with tab3:
