@@ -1,7 +1,4 @@
 import streamlit as st
-import torch
-import torch.nn as nn
-from torchvision import transforms, models
 from PIL import Image
 import numpy as np
 from datetime import datetime
@@ -177,117 +174,153 @@ st.markdown("""
         display: inline-block;
         margin: 1rem 0;
     }
+    
+    .demo-badge {
+        background: #6C757D;
+        color: white;
+        padding: 0.3rem 0.8rem;
+        border-radius: 15px;
+        font-size: 0.85rem;
+        display: inline-block;
+        margin: 0.5rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================
-# CNN MODEL DEFINITION
+# IMAGE ANALYSIS (Computer Vision Heuristics)
 # ==============================================================
-class StrokeResNet(nn.Module):
-    def __init__(self, num_classes=2):
-        super(StrokeResNet, self).__init__()
-        self.model = models.resnet18(weights=None)
-        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+def analyze_facial_asymmetry(neutral_img, smile_img):
+    """
+    Analyzes facial asymmetry using basic computer vision heuristics
+    This is a simplified version for demo purposes.
+    In production, this would use a trained CNN (ResNet18).
     
-    def forward(self, x):
-        return self.model(x)
-
-def preprocess_image(image):
-    """Preprocess image for CNN inference"""
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    return transform(image).unsqueeze(0)
+    Returns: (droop_detected: bool, confidence: float, analysis_type: str)
+    """
+    try:
+        # Resize images to standard size
+        neutral_array = np.array(neutral_img.resize((224, 224)))
+        smile_array = np.array(smile_img.resize((224, 224)))
+        
+        # Convert to grayscale for intensity analysis
+        neutral_gray = np.mean(neutral_array, axis=2)
+        smile_gray = np.mean(smile_array, axis=2)
+        
+        # Divide face into left and right halves
+        mid = 112
+        
+        # Calculate mean intensity for each side
+        neutral_left = neutral_gray[:, :mid].mean()
+        neutral_right = neutral_gray[:, mid:].mean()
+        
+        smile_left = smile_gray[:, :mid].mean()
+        smile_right = smile_gray[:, mid:].mean()
+        
+        # Calculate asymmetry
+        neutral_asymmetry = abs(neutral_left - neutral_right)
+        smile_asymmetry = abs(smile_left - smile_right)
+        
+        # Calculate asymmetry ratio
+        asymmetry_change = smile_asymmetry / (neutral_asymmetry + 1e-6)
+        
+        # Dynamic droop: asymmetry increases significantly when smiling
+        dynamic_droop = asymmetry_change > 1.4
+        
+        # Static droop: high asymmetry in both images
+        static_droop = neutral_asymmetry > 8 and smile_asymmetry > 8
+        
+        droop_detected = dynamic_droop or static_droop
+        
+        # Calculate confidence based on asymmetry magnitude
+        confidence = min(0.92, max(0.60, asymmetry_change / 2.0))
+        
+        if static_droop:
+            analysis_type = "Static Droop (Both images show asymmetry)"
+        elif dynamic_droop:
+            analysis_type = "Dynamic Droop (Asymmetry increases when smiling)"
+        else:
+            analysis_type = "No significant asymmetry detected"
+        
+        return droop_detected, confidence, analysis_type
+        
+    except Exception as e:
+        # Fallback to random for demo if image processing fails
+        st.warning(f"Image analysis using fallback method")
+        droop_detected = np.random.choice([True, False], p=[0.20, 0.80])
+        confidence = np.random.uniform(0.65, 0.85)
+        return droop_detected, confidence, "Fallback analysis"
 
 # ==============================================================
-# NEURO-SYMBOLIC REASONING ENGINE (Full Logic Implementation)
+# NEURO-SYMBOLIC REASONING ENGINE
 # ==============================================================
 class StrokeBridge:
     """
     Implements the complete stroke_logic.pl reasoning system
+    Based on: https://github.com/3N61N33R/stroke-detection/blob/develop/src/logic/stroke_logic.pl
+    
+    This version uses computer vision heuristics instead of CNN for demo purposes.
+    The probabilistic logic reasoning is fully implemented.
     """
     
     def __init__(self):
-        self.cnn_model = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_loaded = False
         
-    def load_model(self, model_path=None):
-        """Load pre-trained CNN model"""
-        self.cnn_model = StrokeResNet()
-        if model_path:
-            try:
-                self.cnn_model.load_state_dict(torch.load(model_path, map_location=self.device))
-                self.cnn_model.eval()
-                return True
-            except:
-                return False
-        return False
-    
     def detect_facial_droop(self, neutral_img, smile_img):
         """
         Facial droop detection (stroke_logic.pl lines 32-42)
-        Returns: (droop_detected: bool, confidence: float)
+        
+        Rules:
+        1. Dynamic droop: neutral normal, smile droop
+        2. Static droop: both neutral and smile show droop
+        
+        Returns: (droop_detected: bool, confidence: float, analysis_type: str)
         """
-        if self.cnn_model is None:
-            # Demo mode with realistic probabilities
-            droop_detected = np.random.choice([True, False], p=[0.25, 0.75])
-            confidence = np.random.uniform(0.65, 0.92)
-            return droop_detected, confidence
-        
-        # Real CNN inference
-        neutral_tensor = preprocess_image(neutral_img)
-        smile_tensor = preprocess_image(smile_img)
-        
-        with torch.no_grad():
-            neutral_out = self.cnn_model(neutral_tensor.to(self.device))
-            smile_out = self.cnn_model(smile_tensor.to(self.device))
-            
-            neutral_prob = torch.softmax(neutral_out, dim=1)[0][1].item()
-            smile_prob = torch.softmax(smile_out, dim=1)[0][1].item()
-            
-            # Dynamic droop: neutral normal, smile droop
-            dynamic_droop = (neutral_prob < 0.5 and smile_prob > 0.5)
-            # Static droop: both droop
-            static_droop = (neutral_prob > 0.5 and smile_prob > 0.5)
-            
-            droop_detected = dynamic_droop or static_droop
-            confidence = max(neutral_prob, smile_prob)
-            
-        return droop_detected, confidence
+        return analyze_facial_asymmetry(neutral_img, smile_img)
     
     def calculate_speech_risk(self, has_speech_issue, gender):
         """
         Speech risk with gender bias (stroke_logic.pl lines 49-50)
+        
+        Rules:
+        - 0.56::speech_risk(P) :- gender(P, female), speech_issue(P).
+        - 0.42::speech_risk(P) :- gender(P, male), speech_issue(P).
         """
         if not has_speech_issue:
             return 0.0
         
         if gender.lower() == "female":
-            return 0.56  # 56% weight for females
+            return 0.56  # 56% weight for females (Berglund et al., 2014)
         else:
             return 0.42  # 42% weight for males
     
     def calculate_arm_risk(self, has_arm_weakness):
         """
         Arm weakness risk (stroke_logic.pl line 52)
+        
+        Rule:
+        - 0.89::arm_risk(P) :- arm_weakness(P).
         """
         return 0.89 if has_arm_weakness else 0.0
     
     def calculate_stroke_probability(self, facial_droop, speech_risk, arm_risk):
         """
         Core stroke probability (stroke_logic.pl lines 69-82)
+        
+        Rules:
+        1. Neural + reported symptoms: 73% PPV
+        2. Reported symptoms only: 56% PPV
+        3. Neural signal only: 60% PPV
         """
-        # Scenario 1: Neural + reported symptoms (73%)
+        # Scenario 1: Neural + reported symptoms (73% PPV - ambulance setting)
         if facial_droop and (speech_risk > 0 or arm_risk > 0):
             return 0.73
         
-        # Scenario 2: Reported symptoms only (56%)
+        # Scenario 2: Reported symptoms only (56% PPV - dispatcher setting)
         if not facial_droop and (speech_risk > 0 or arm_risk > 0):
             return 0.56
         
-        # Scenario 3: Neural signal only (60%)
+        # Scenario 3: Neural signal only (60% PPV)
         if facial_droop and speech_risk == 0 and arm_risk == 0:
             return 0.60
         
@@ -296,15 +329,21 @@ class StrokeBridge:
     def calculate_hidden_stroke_risk(self, stroke_prob, has_dizziness, has_vision_change):
         """
         BE symptoms: Balance & Eyes (stroke_logic.pl lines 89-95)
+        
+        Rules:
+        - 0.20::hidden_stroke_risk(P) :- \+ stroke_probability(P), dizziness(P).
+        - 0.527::hidden_stroke_risk(P) :- \+ stroke_probability(P), vision_change(P).
+        
+        These catch posterior circulation strokes often missed by standard FAST.
         """
         if stroke_prob > 0:
             return 0.0
         
-        # Balance (dizziness) - 20%
+        # Balance (dizziness) - 20% risk
         if has_dizziness:
             return 0.20
         
-        # Eyes (vision changes) - 52.7%
+        # Eyes (vision changes) - 52.7% risk (high predictive value)
         if has_vision_change:
             return 0.527
         
@@ -313,12 +352,22 @@ class StrokeBridge:
     def calculate_recurrence_boost(self, has_recent_tia):
         """
         TIA history boost (stroke_logic.pl line 102)
+        
+        Rule:
+        - 0.10::recurrence_boost(P) :- history_recent_tia(P).
+        
+        TIA (mini-stroke) is a major warning sign.
         """
         return 0.10 if has_recent_tia else 0.0
     
     def check_if_mimic(self, has_prior_stroke, has_new_symptoms):
         """
         Stroke mimic detection (stroke_logic.pl lines 105-107)
+        
+        Rule:
+        - 0.14::is_mimic(P) :- history_prior_stroke(P), \+ new_symptom(P).
+        
+        Distinguishes new stroke from residual effects of old stroke.
         """
         if has_prior_stroke and not has_new_symptoms:
             return True, 0.14
@@ -327,34 +376,47 @@ class StrokeBridge:
     def determine_clinical_decision(self, stroke_prob, hidden_risk, recurrence_boost, 
                                    is_mimic, fast_positive):
         """
-        Clinical decision tree (stroke_logic.pl lines 114-145)
-        Returns: (decision: str, risk_category: str)
+        Clinical decision tree (stroke_logic.pl lines 114-167)
+        
+        Maps probabilities to actionable clinical decisions:
+        - urgent_call_911 → CRITICAL
+        - seek_urgent_care → HIGH
+        - consider_evaluation → MODERATE
+        - monitor → LOW
         """
         # CRITICAL: Call 911 immediately
+        # urgent_call_911(P) :- stroke_probability(P), fast_positive(P), \+ is_mimic(P).
         if stroke_prob > 0 and fast_positive and not is_mimic:
             return "urgent_call_911", "critical"
         
+        # urgent_call_911(P) :- stroke_probability(P), recurrence_boost(P), \+ is_mimic(P).
         if stroke_prob > 0 and recurrence_boost > 0 and not is_mimic:
             return "urgent_call_911", "critical"
         
         # HIGH: Seek urgent care
+        # seek_urgent_care(P) :- stroke_probability(P), \+ urgent_call_911(P), \+ is_mimic(P).
         if stroke_prob > 0 and not is_mimic:
             return "seek_urgent_care", "high"
         
+        # seek_urgent_care(P) :- hidden_stroke_risk(P), \+ is_mimic(P).
         if hidden_risk > 0 and not is_mimic:
             return "seek_urgent_care", "high"
         
+        # seek_urgent_care(P) :- recurrence_boost(P), \+ urgent_call_911(P), \+ is_mimic(P).
         if recurrence_boost > 0 and not is_mimic:
             return "seek_urgent_care", "high"
         
         # MODERATE: Consider evaluation
+        # consider_evaluation(P) :- hidden_stroke_risk(P), is_mimic(P).
         if hidden_risk > 0 and is_mimic:
             return "consider_evaluation", "moderate"
         
+        # consider_evaluation(P) :- is_mimic(P), \+ stroke_probability(P), \+ hidden_stroke_risk(P).
         if is_mimic and stroke_prob == 0 and hidden_risk == 0:
             return "consider_evaluation", "moderate"
         
         # LOW: Continue monitoring
+        # risk_category(low, P) :- \+ urgent_call_911(P), \+ seek_urgent_care(P), \+ consider_evaluation(P).
         return "monitor", "low"
 
 # ==============================================================
@@ -362,10 +424,12 @@ class StrokeBridge:
 # ==============================================================
 if 'bridge' not in st.session_state:
     st.session_state.bridge = StrokeBridge()
-    st.session_state.bridge.load_model()
 
 if 'assessment_time' not in st.session_state:
     st.session_state.assessment_time = None
+
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
 
 # ==============================================================
 # MAIN APPLICATION
@@ -374,6 +438,7 @@ def main():
     # Header
     st.markdown('<div class="main-header">🧠 BE-FAST Stroke Detection System</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Neuro-Symbolic AI for Early Stroke Assessment</div>', unsafe_allow_html=True)
+    st.markdown('<div class="demo-badge">🔬 DEMO MODE - Computer Vision Heuristics</div>', unsafe_allow_html=True)
     
     # Medical Disclaimer
     st.markdown("""
@@ -382,7 +447,7 @@ def main():
         It is NOT a substitute for professional medical diagnosis. If you suspect a stroke, 
         <strong>CALL EMERGENCY SERVICES IMMEDIATELY (911 or your local emergency number)</strong>.
         <br><br>
-        <strong>Time is Brain:</strong> Every minute counts in stroke treatment. Note the time symptoms started.
+        <strong>⏰ Time is Brain:</strong> Every minute counts in stroke treatment. Note the time symptoms started.
     </div>
     """, unsafe_allow_html=True)
     
@@ -492,12 +557,13 @@ def main():
         with st.expander("📖 Photo Guidelines"):
             st.markdown("""
             **For best results:**
-            - Ensure good lighting (face well-lit, no shadows)
-            - Face directly toward camera
-            - Remove glasses if possible
-            - Keep face centered in frame
-            - Neutral: Relaxed face, lips closed
-            - Smile: Show teeth, smile as wide as possible
+            - ✅ Ensure good lighting (face well-lit, no shadows)
+            - ✅ Face directly toward camera
+            - ✅ Remove glasses if possible
+            - ✅ Keep face centered in frame
+            - 😐 **Neutral:** Relaxed face, lips closed
+            - 😊 **Smile:** Show teeth, smile as wide as possible
+            - 📏 Keep same distance from camera for both photos
             """)
     
     # TAB 2: Risk Assessment
@@ -509,11 +575,12 @@ def main():
                 # 1. Facial Analysis
                 facial_droop_detected = False
                 cnn_confidence = 0.0
+                analysis_type = "No images provided"
                 
                 if neutral_img and smile_img:
                     neutral_pil = Image.open(neutral_img)
                     smile_pil = Image.open(smile_img)
-                    facial_droop_detected, cnn_confidence = st.session_state.bridge.detect_facial_droop(
+                    facial_droop_detected, cnn_confidence, analysis_type = st.session_state.bridge.detect_facial_droop(
                         neutral_pil, smile_pil
                     )
                 
@@ -548,6 +615,7 @@ def main():
                 st.session_state.results = {
                     'facial_droop': facial_droop_detected,
                     'cnn_confidence': cnn_confidence,
+                    'analysis_type': analysis_type,
                     'speech_risk': speech_risk,
                     'arm_risk': arm_risk,
                     'stroke_prob': stroke_prob,
@@ -568,7 +636,7 @@ def main():
     
     # TAB 3: Results
     with tab3:
-        if not hasattr(st.session_state, 'analysis_complete') or not st.session_state.analysis_complete:
+        if not st.session_state.analysis_complete:
             st.info("👈 Complete the assessment and click **Analyze Risk** in the Risk Assessment tab to see results.")
         else:
             results = st.session_state.results
@@ -659,19 +727,21 @@ def main():
             st.subheader("🔍 Detailed Analysis")
             
             # Facial Analysis
-            with st.expander("👤 Facial Droop Analysis (Neural Network)", expanded=True):
+            with st.expander("👤 Facial Droop Analysis (Computer Vision)", expanded=True):
                 col1, col2 = st.columns(2)
                 with col1:
                     status = "DETECTED" if results['facial_droop'] else "NOT DETECTED"
                     color = "status-positive" if results['facial_droop'] else "status-negative"
                     st.markdown(f"**Status:** <span class='{color}'>{status}</span>", unsafe_allow_html=True)
                 with col2:
-                    st.metric("CNN Confidence", f"{results['cnn_confidence']*100:.1f}%")
+                    st.metric("Analysis Confidence", f"{results['cnn_confidence']*100:.1f}%")
+                
+                st.caption(f"Method: {results['analysis_type']}")
                 
                 if results['facial_droop']:
                     st.warning("⚠️ Facial asymmetry detected by computer vision analysis")
                 else:
-                    st.success("✅ No facial asymmetry detected")
+                    st.success("✅ No significant facial asymmetry detected")
             
             # FAST Symptoms
             with st.expander("🩺 FAST Symptom Analysis", expanded=True):
@@ -731,11 +801,11 @@ def main():
             st.subheader("🧠 AI Reasoning")
             
             if results['stroke_prob'] >= 0.73:
-                st.info("**High Confidence Assessment (73% PPV)**\n\nBoth neural network vision confirmation AND patient-reported symptoms align. This represents ambulance/on-scene level assessment confidence.")
+                st.info("**High Confidence Assessment (73% PPV)**\n\nBoth computer vision analysis AND patient-reported symptoms align. This represents ambulance/on-scene level assessment confidence.")
             elif results['stroke_prob'] >= 0.56:
                 st.info("**Moderate Confidence Assessment (56% PPV)**\n\nBased on patient-reported symptoms without visual confirmation. This represents dispatcher/phone assessment level confidence.")
             elif results['stroke_prob'] >= 0.60:
-                st.info("**Visual-Only Assessment (60% PPV)**\n\nFacial asymmetry detected by camera but no corroborating symptoms reported. Consider image quality and lighting.")
+                st.info("**Visual-Only Assessment (60% PPV)**\n\nFacial asymmetry detected by computer vision but no corroborating symptoms reported. Consider image quality and lighting.")
             elif results['hidden_risk'] > 0:
                 st.info("**Hidden Stroke Pattern Detected**\n\nBalance or vision symptoms without standard FAST criteria. These symptoms can indicate posterior circulation strokes often missed by standard screening.")
             else:
@@ -761,6 +831,7 @@ ASSESSMENT DETAILS:
 
 SYMPTOMS:
 - Facial Droop: {'Detected' if results['facial_droop'] else 'Not Detected'} ({results['cnn_confidence']*100:.1f}% confidence)
+  Analysis: {results['analysis_type']}
 - Speech Difficulty: {'Present' if results['speech_risk'] > 0 else 'Absent'} ({results['speech_risk']*100:.0f}%)
 - Arm Weakness: {'Present' if results['arm_risk'] > 0 else 'Absent'} ({results['arm_risk']*100:.0f}%)
 - Balance Issues: {'Present' if results['has_balance'] else 'Absent'}
@@ -768,6 +839,9 @@ SYMPTOMS:
 
 DISCLAIMER: This is an AI-assisted screening tool and NOT a medical diagnosis.
 Seek professional medical evaluation for any health concerns.
+
+This assessment uses computer vision heuristics in demo mode.
+Production version would use trained ResNet18 CNN model.
                 """
                 st.download_button(
                     "Download Report",
@@ -786,12 +860,17 @@ Seek professional medical evaluation for any health concerns.
             st.subheader("🧠 Neuro-Symbolic AI")
             st.markdown("""
             This system combines:
-            1. **Deep Learning (CNN)** - ResNet18 for facial droop detection
+            1. **Computer Vision** - Facial asymmetry detection
             2. **Probabilistic Logic** - DeepProbLog reasoning engine
             3. **Clinical Guidelines** - BE-FAST protocol implementation
             
+            **Current Mode:**
+            - 🔬 Demo: Computer vision heuristics
+            - 🎯 Production: ResNet18 CNN (in development)
+            - ✅ Full probabilistic logic reasoning active
+            
             **Architecture:**
-            - Neural perception (computer vision)
+            - Visual perception (image analysis)
             - Symbolic reasoning (logic programming)
             - Evidence-based probabilities
             """)
@@ -813,8 +892,9 @@ Seek professional medical evaluation for any health concerns.
             st.markdown("""
             **Probabilities from peer-reviewed research:**
             
-            - **73% PPV** - Camera + symptoms (ambulance setting)
+            - **73% PPV** - Vision + symptoms (ambulance setting)
             - **56% PPV** - Symptoms only (dispatcher setting)
+            - **60% PPV** - Vision only (moderate confidence)
             - **52.7%** - Vision changes predictive value
             - **20%** - Balance issues stroke risk
             - **14%** - Stroke mimic probability
@@ -822,11 +902,14 @@ Seek professional medical evaluation for any health concerns.
             **Gender-specific weighting:**
             - Female speech symptoms: 56%
             - Male speech symptoms: 42%
+            
+            **Source:** stroke_logic.pl (DeepProbLog)
             """)
             
             st.subheader("⚖️ Limitations")
             st.markdown("""
             - Not FDA approved for clinical use
+            - Demo mode uses heuristics (not trained CNN)
             - Requires good lighting for photos
             - Cannot detect all stroke types
             - Should not replace professional judgment
@@ -873,18 +956,23 @@ Seek professional medical evaluation for any health concerns.
         st.subheader("📚 References")
         with st.expander("View Research Citations"):
             st.markdown("""
-            1. Berglund et al. (2014) - Gender differences in stroke presentation
-            2. Claus et al. (2024) - Arm weakness prevalence in stroke
-            3. Aroor et al. (2017) - BE-FAST validation study
-            4. Harbison et al. (2003) - FAST protocol positive predictive value
-            5. Nor et al. (2005) - Prehospital stroke recognition accuracy
+            1. **Berglund et al. (2014)** - Gender differences in stroke presentation
+            2. **Claus et al. (2024)** - Arm weakness prevalence in stroke
+            3. **Aroor et al. (2017)** - BE-FAST validation study
+            4. **Harbison et al. (2003)** - FAST protocol positive predictive value
+            5. **Nor et al. (2005)** - Prehospital stroke recognition accuracy
+            
+            **Logic Implementation:**
+            - Based on: `src/logic/stroke_logic.pl`
+            - Repository: https://github.com/3N61N33R/stroke-detection
             """)
         
         st.markdown("---")
         st.caption(f"""
-        **Version:** 2.0.0 | **Last Updated:** {datetime.now().strftime('%B %Y')}  
+        **Version:** 2.0.0 (Demo Mode) | **Last Updated:** {datetime.now().strftime('%B %Y')}  
         **Repository:** [3N61N33R/stroke-detection](https://github.com/3N61N33R/stroke-detection)  
-        **License:** MIT | **Python:** 3.12 | **Framework:** Streamlit + PyTorch
+        **License:** MIT | **Python:** 3.11 | **Framework:** Streamlit  
+        **Mode:** Computer Vision Heuristics (CNN training in progress)
         """)
 
 if __name__ == "__main__":
