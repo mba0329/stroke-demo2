@@ -979,11 +979,6 @@ Demo Mode: Uses computer vision heuristics (Production uses trained CNN).
             **Gender-specific weighting:**
             - Female speech deficit: 56% (Berglund et al., 2014)
             - Male speech deficit: 42%
-            
-            **Terminology (Updated):**
-            - `speech_deficit` (was `speech_risk`)
-            - `arm_deficit` (was `arm_risk`)
-            - `atypical_stroke` (was `hidden_stroke_risk`)
             """)
             
             st.subheader("⚖️ Limitations")
