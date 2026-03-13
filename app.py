@@ -479,7 +479,7 @@ def main():
         st.markdown("---")
         st.header("⏰ BE-FAST Assessment")
         
-        # BE-FAST Protocol Display (Updated - no redundant bold)
+        # BE-FAST Protocol Display (Clean formatting)
         st.markdown("""
         <div class="befast-box">
             <strong>B</strong> - Balance: Sudden dizziness or loss of coordination<br>
@@ -577,14 +577,6 @@ def main():
     # TAB 2: Risk Assessment
     with tab2:
         st.header("🔬 Comprehensive Stroke Risk Analysis")
-        
-        # Info box about the system
-        st.info("""
-        This system implements the **DeepProbLog neuro-symbolic engine** described in:
-        - `src/logic/stroke_logic.pl` - Probabilistic logic rules
-        - `src/bridge/dpl_interface.py` - Neural-symbolic bridge
-        - `src/networks/facial_net.py` - FacialDroopCNN architecture
-        """)
         
         if st.button("🔍 **ANALYZE RISK NOW**", type="primary", use_container_width=True, key="analyze_btn"):
             with st.spinner("🧠 Analyzing data with neuro-symbolic AI..."):
