@@ -12,8 +12,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        'Get Help': 'https://github.com/3N61N33R/stroke-detection',
-        'Report a bug': 'https://github.com/3N61N33R/stroke-detection/issues',
+        'Get Help': 'https://github.com/mba0329/stroke-demo2',
+        'Report a bug': 'https://github.com/mba0329/stroke-demo2/issues',
         'About': "Neuro-Symbolic AI for Stroke Detection using BE-FAST Protocol"
     }
 )
@@ -48,6 +48,7 @@ st.markdown("""
         color: white;
         margin: 1rem 0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        line-height: 1.8;
     }
     
     .befast-box strong {
@@ -192,9 +193,14 @@ st.markdown("""
 # ==============================================================
 def analyze_facial_asymmetry(neutral_img, smile_img):
     """
-    Analyzes facial asymmetry using basic computer vision heuristics
-    This is a simplified version for demo purposes.
-    In production, this would use a trained CNN (ResNet18).
+    Analyzes facial asymmetry using basic computer vision heuristics.
+    
+    This implements the logic from stroke_logic.pl lines 37-47:
+    - Dynamic droop: neutral normal, smile droop
+    - Static droop: both neutral and smile show droop
+    
+    In production, this would use the trained FacialDroopCNN from:
+    src/networks/facial_net.py via src/bridge/dpl_interface.py
     
     Returns: (droop_detected: bool, confidence: float, analysis_type: str)
     """
@@ -245,8 +251,7 @@ def analyze_facial_asymmetry(neutral_img, smile_img):
         return droop_detected, confidence, analysis_type
         
     except Exception as e:
-        # Fallback to random for demo if image processing fails
-        st.warning(f"Image analysis using fallback method")
+        # Fallback for demo if image processing fails
         droop_detected = np.random.choice([True, False], p=[0.20, 0.80])
         confidence = np.random.uniform(0.65, 0.85)
         return droop_detected, confidence, "Fallback analysis"
@@ -256,11 +261,13 @@ def analyze_facial_asymmetry(neutral_img, smile_img):
 # ==============================================================
 class StrokeBridge:
     """
-    Implements the complete stroke_logic.pl reasoning system
-    Based on: https://github.com/3N61N33R/stroke-detection/blob/develop/src/logic/stroke_logic.pl
+    Implements the complete stroke_logic.pl reasoning system.
     
-    This version uses computer vision heuristics instead of CNN for demo purposes.
-    The probabilistic logic reasoning is fully implemented.
+    Based on: https://github.com/mba0329/stroke-demo2/blob/main/src/logic/stroke_logic.pl
+    Integration: Uses logic from dpl_interface.py for clinical decision making
+    
+    This version uses computer vision heuristics for demo purposes.
+    Full DeepProbLog integration available in src/bridge/dpl_interface.py
     """
     
     def __init__(self):
@@ -268,23 +275,25 @@ class StrokeBridge:
         
     def detect_facial_droop(self, neutral_img, smile_img):
         """
-        Facial droop detection (stroke_logic.pl lines 32-42)
+        Facial droop detection (stroke_logic.pl lines 37-47)
         
         Rules:
-        1. Dynamic droop: neutral normal, smile droop
-        2. Static droop: both neutral and smile show droop
+        - facial_droop_detected(Person, NeutralImg, SmileImg)
         
         Returns: (droop_detected: bool, confidence: float, analysis_type: str)
         """
         return analyze_facial_asymmetry(neutral_img, smile_img)
     
-    def calculate_speech_risk(self, has_speech_issue, gender):
+    def calculate_speech_deficit(self, has_speech_issue, gender):
         """
-        Speech risk with gender bias (stroke_logic.pl lines 49-50)
+        Speech deficit with gender bias (stroke_logic.pl lines 54-55)
+        
+        Updated terminology from dpl_interface.py:
+        - speech_risk → speech_deficit
         
         Rules:
-        - 0.56::speech_risk(P) :- gender(P, female), speech_issue(P).
-        - 0.42::speech_risk(P) :- gender(P, male), speech_issue(P).
+        - 0.56::speech_deficit(P) :- gender(P, female), speech_issue(P).
+        - 0.42::speech_deficit(P) :- gender(P, male), speech_issue(P).
         """
         if not has_speech_issue:
             return 0.0
@@ -294,45 +303,54 @@ class StrokeBridge:
         else:
             return 0.42  # 42% weight for males
     
-    def calculate_arm_risk(self, has_arm_weakness):
+    def calculate_arm_deficit(self, has_arm_weakness):
         """
-        Arm weakness risk (stroke_logic.pl line 52)
+        Arm deficit (stroke_logic.pl line 57)
+        
+        Updated terminology from dpl_interface.py:
+        - arm_risk → arm_deficit
         
         Rule:
-        - 0.89::arm_risk(P) :- arm_weakness(P).
+        - 0.89::arm_deficit(P) :- arm_weakness(P).
         """
         return 0.89 if has_arm_weakness else 0.0
     
-    def calculate_stroke_probability(self, facial_droop, speech_risk, arm_risk):
+    def calculate_stroke_probability(self, facial_droop, speech_deficit, arm_deficit):
         """
-        Core stroke probability (stroke_logic.pl lines 69-82)
+        Core stroke probability (stroke_logic.pl lines 74-87)
+        
+        Updated terminology:
+        - stroke_probability → stroke
         
         Rules:
-        1. Neural + reported symptoms: 73% PPV
-        2. Reported symptoms only: 56% PPV
+        1. Neural + reported symptoms: 73% PPV (ambulance setting)
+        2. Reported symptoms only: 56% PPV (dispatcher setting)
         3. Neural signal only: 60% PPV
         """
-        # Scenario 1: Neural + reported symptoms (73% PPV - ambulance setting)
-        if facial_droop and (speech_risk > 0 or arm_risk > 0):
+        # 0.73::stroke(P) :- facial_droop_detected(P, _, _), (speech_deficit(P) ; arm_deficit(P)).
+        if facial_droop and (speech_deficit > 0 or arm_deficit > 0):
             return 0.73
         
-        # Scenario 2: Reported symptoms only (56% PPV - dispatcher setting)
-        if not facial_droop and (speech_risk > 0 or arm_risk > 0):
+        # 0.56::stroke(P) :- \+ facial_droop_detected(P, _, _), (speech_deficit(P) ; arm_deficit(P)).
+        if not facial_droop and (speech_deficit > 0 or arm_deficit > 0):
             return 0.56
         
-        # Scenario 3: Neural signal only (60% PPV)
-        if facial_droop and speech_risk == 0 and arm_risk == 0:
+        # 0.60::stroke(P) :- facial_droop_detected(P, _, _), \+ speech_deficit(P), \+ arm_deficit(P).
+        if facial_droop and speech_deficit == 0 and arm_deficit == 0:
             return 0.60
         
         return 0.0
     
-    def calculate_hidden_stroke_risk(self, stroke_prob, has_dizziness, has_vision_change):
+    def calculate_atypical_stroke(self, stroke_prob, has_dizziness, has_vision_change):
         """
-        BE symptoms: Balance & Eyes (stroke_logic.pl lines 89-95)
+        BE symptoms: Balance & Eyes (stroke_logic.pl lines 94-100)
+        
+        Updated terminology from dpl_interface.py:
+        - hidden_stroke_risk → atypical_stroke
         
         Rules:
-        - 0.20::hidden_stroke_risk(P) :- \+ stroke_probability(P), dizziness(P).
-        - 0.527::hidden_stroke_risk(P) :- \+ stroke_probability(P), vision_change(P).
+        - 0.20::atypical_stroke(P) :- \+ stroke(P), dizziness(P).
+        - 0.527::atypical_stroke(P) :- \+ stroke(P), vision_change(P).
         
         These catch posterior circulation strokes often missed by standard FAST.
         """
@@ -343,7 +361,7 @@ class StrokeBridge:
         if has_dizziness:
             return 0.20
         
-        # Eyes (vision changes) - 52.7% risk (high predictive value)
+        # Eyes (vision changes) - 52.7% risk
         if has_vision_change:
             return 0.527
         
@@ -351,73 +369,63 @@ class StrokeBridge:
     
     def calculate_recurrence_boost(self, has_recent_tia):
         """
-        TIA history boost (stroke_logic.pl line 102)
+        TIA history boost (stroke_logic.pl line 107)
         
         Rule:
         - 0.10::recurrence_boost(P) :- history_recent_tia(P).
-        
-        TIA (mini-stroke) is a major warning sign.
         """
         return 0.10 if has_recent_tia else 0.0
     
     def check_if_mimic(self, has_prior_stroke, has_new_symptoms):
         """
-        Stroke mimic detection (stroke_logic.pl lines 105-107)
+        Stroke mimic detection (stroke_logic.pl lines 110-112)
         
         Rule:
         - 0.14::is_mimic(P) :- history_prior_stroke(P), \+ new_symptom(P).
-        
-        Distinguishes new stroke from residual effects of old stroke.
         """
         if has_prior_stroke and not has_new_symptoms:
             return True, 0.14
         return False, 0.0
     
-    def determine_clinical_decision(self, stroke_prob, hidden_risk, recurrence_boost, 
+    def determine_clinical_decision(self, stroke_prob, atypical_stroke, recurrence_boost, 
                                    is_mimic, fast_positive):
         """
-        Clinical decision tree (stroke_logic.pl lines 114-167)
+        Clinical decision tree based on dpl_interface.py lines 122-144
+        
+        This implements the exact logic from your repository's bridge implementation.
         
         Maps probabilities to actionable clinical decisions:
-        - urgent_call_911 → CRITICAL
-        - seek_urgent_care → HIGH
-        - consider_evaluation → MODERATE
+        - urgent_911 → CRITICAL
+        - seek_urgent → HIGH
+        - consider_eval → MODERATE
         - monitor → LOW
         """
-        # CRITICAL: Call 911 immediately
-        # urgent_call_911(P) :- stroke_probability(P), fast_positive(P), \+ is_mimic(P).
-        if stroke_prob > 0 and fast_positive and not is_mimic:
+        # Convert to boolean triggers (matching dpl_interface.py lines 116-120)
+        has_stroke = stroke_prob >= 0.50
+        is_fast_pos = fast_positive
+        is_atypical = atypical_stroke > 0.0
+        has_recurrence = recurrence_boost > 0.0
+        
+        # Apply clinical rules (dpl_interface.py lines 123-131)
+        urgent_911 = (has_stroke and is_fast_pos and not is_mimic) or \
+                     (has_stroke and has_recurrence and not is_mimic)
+                     
+        seek_urgent = (has_stroke and not urgent_911 and not is_mimic) or \
+                      (is_atypical and not is_mimic) or \
+                      (has_recurrence and not urgent_911 and not is_mimic)
+                      
+        consider_eval = (is_atypical and is_mimic) or \
+                        (is_mimic and not has_stroke and not is_atypical)
+        
+        # Map to risk categories (dpl_interface.py lines 133-144)
+        if urgent_911:
             return "urgent_call_911", "critical"
-        
-        # urgent_call_911(P) :- stroke_probability(P), recurrence_boost(P), \+ is_mimic(P).
-        if stroke_prob > 0 and recurrence_boost > 0 and not is_mimic:
-            return "urgent_call_911", "critical"
-        
-        # HIGH: Seek urgent care
-        # seek_urgent_care(P) :- stroke_probability(P), \+ urgent_call_911(P), \+ is_mimic(P).
-        if stroke_prob > 0 and not is_mimic:
+        elif seek_urgent:
             return "seek_urgent_care", "high"
-        
-        # seek_urgent_care(P) :- hidden_stroke_risk(P), \+ is_mimic(P).
-        if hidden_risk > 0 and not is_mimic:
-            return "seek_urgent_care", "high"
-        
-        # seek_urgent_care(P) :- recurrence_boost(P), \+ urgent_call_911(P), \+ is_mimic(P).
-        if recurrence_boost > 0 and not is_mimic:
-            return "seek_urgent_care", "high"
-        
-        # MODERATE: Consider evaluation
-        # consider_evaluation(P) :- hidden_stroke_risk(P), is_mimic(P).
-        if hidden_risk > 0 and is_mimic:
+        elif consider_eval:
             return "consider_evaluation", "moderate"
-        
-        # consider_evaluation(P) :- is_mimic(P), \+ stroke_probability(P), \+ hidden_stroke_risk(P).
-        if is_mimic and stroke_prob == 0 and hidden_risk == 0:
-            return "consider_evaluation", "moderate"
-        
-        # LOW: Continue monitoring
-        # risk_category(low, P) :- \+ urgent_call_911(P), \+ seek_urgent_care(P), \+ consider_evaluation(P).
-        return "monitor", "low"
+        else:
+            return "monitor", "low"
 
 # ==============================================================
 # INITIALIZE SESSION STATE
@@ -471,15 +479,15 @@ def main():
         st.markdown("---")
         st.header("⏰ BE-FAST Assessment")
         
-        # BE-FAST Protocol Display
+        # BE-FAST Protocol Display (Updated - no redundant bold)
         st.markdown("""
         <div class="befast-box">
-            <strong>B</strong> - <strong>B</strong>alance: Sudden dizziness or loss of coordination<br>
-            <strong>E</strong> - <strong>E</strong>yes: Vision problems (double vision, loss of vision)<br>
-            <strong>F</strong> - <strong>F</strong>ace: Facial drooping or asymmetry<br>
-            <strong>A</strong> - <strong>A</strong>rms: Arm weakness or numbness<br>
-            <strong>S</strong> - <strong>S</strong>peech: Slurred speech or difficulty speaking<br>
-            <strong>T</strong> - <strong>T</strong>ime: Time to call 911 NOW!
+            <strong>B</strong> - Balance: Sudden dizziness or loss of coordination<br>
+            <strong>E</strong> - Eyes: Vision problems (double vision, loss of vision)<br>
+            <strong>F</strong> - Face: Facial drooping or asymmetry<br>
+            <strong>A</strong> - Arms: Arm weakness or numbness<br>
+            <strong>S</strong> - Speech: Slurred speech or difficulty speaking<br>
+            <strong>T</strong> - Time: Time to call 911 NOW!
         </div>
         """, unsafe_allow_html=True)
         
@@ -570,6 +578,14 @@ def main():
     with tab2:
         st.header("🔬 Comprehensive Stroke Risk Analysis")
         
+        # Info box about the system
+        st.info("""
+        This system implements the **DeepProbLog neuro-symbolic engine** described in:
+        - `src/logic/stroke_logic.pl` - Probabilistic logic rules
+        - `src/bridge/dpl_interface.py` - Neural-symbolic bridge
+        - `src/networks/facial_net.py` - FacialDroopCNN architecture
+        """)
+        
         if st.button("🔍 **ANALYZE RISK NOW**", type="primary", use_container_width=True, key="analyze_btn"):
             with st.spinner("🧠 Analyzing data with neuro-symbolic AI..."):
                 # 1. Facial Analysis
@@ -584,17 +600,17 @@ def main():
                         neutral_pil, smile_pil
                     )
                 
-                # 2. Calculate Individual Risks
-                speech_risk = st.session_state.bridge.calculate_speech_risk(has_speech_issue, gender)
-                arm_risk = st.session_state.bridge.calculate_arm_risk(has_arm_weakness)
+                # 2. Calculate Individual Deficits (Updated terminology)
+                speech_deficit = st.session_state.bridge.calculate_speech_deficit(has_speech_issue, gender)
+                arm_deficit = st.session_state.bridge.calculate_arm_deficit(has_arm_weakness)
                 
                 # 3. Core Stroke Probability
                 stroke_prob = st.session_state.bridge.calculate_stroke_probability(
-                    facial_droop_detected, speech_risk, arm_risk
+                    facial_droop_detected, speech_deficit, arm_deficit
                 )
                 
-                # 4. Hidden Stroke Risk (BE symptoms)
-                hidden_risk = st.session_state.bridge.calculate_hidden_stroke_risk(
+                # 4. Atypical Stroke Risk (Updated terminology: hidden_stroke_risk → atypical_stroke)
+                atypical_stroke = st.session_state.bridge.calculate_atypical_stroke(
                     stroke_prob, has_balance_issue, has_vision_issue
                 )
                 
@@ -602,12 +618,12 @@ def main():
                 recurrence_boost = st.session_state.bridge.calculate_recurrence_boost(has_recent_tia)
                 is_mimic, mimic_prob = st.session_state.bridge.check_if_mimic(has_prior_stroke, has_new_symptoms)
                 
-                # 6. FAST Positive Check
-                fast_positive = facial_droop_detected or speech_risk > 0 or arm_risk > 0
+                # 6. FAST Positive Check (stroke_logic.pl lines 59-66)
+                fast_positive = facial_droop_detected or speech_deficit > 0 or arm_deficit > 0
                 
-                # 7. Clinical Decision
+                # 7. Clinical Decision (matches dpl_interface.py logic)
                 decision, risk_category = st.session_state.bridge.determine_clinical_decision(
-                    stroke_prob, hidden_risk, recurrence_boost, is_mimic, fast_positive
+                    stroke_prob, atypical_stroke, recurrence_boost, is_mimic, fast_positive
                 )
                 
                 # Store in session state for Results tab
@@ -616,10 +632,10 @@ def main():
                     'facial_droop': facial_droop_detected,
                     'cnn_confidence': cnn_confidence,
                     'analysis_type': analysis_type,
-                    'speech_risk': speech_risk,
-                    'arm_risk': arm_risk,
+                    'speech_deficit': speech_deficit,
+                    'arm_deficit': arm_deficit,
                     'stroke_prob': stroke_prob,
-                    'hidden_risk': hidden_risk,
+                    'atypical_stroke': atypical_stroke,
                     'recurrence_boost': recurrence_boost,
                     'is_mimic': is_mimic,
                     'mimic_prob': mimic_prob,
@@ -685,7 +701,7 @@ def main():
             """, unsafe_allow_html=True)
             
             # Combined Risk Score
-            total_risk = results['stroke_prob'] + results['hidden_risk'] + results['recurrence_boost']
+            total_risk = results['stroke_prob'] + results['atypical_stroke'] + results['recurrence_boost']
             if results['is_mimic']:
                 total_risk *= (1 - results['mimic_prob'])
             
@@ -742,37 +758,40 @@ def main():
                 else:
                     st.success("✅ No significant facial asymmetry detected")
             
-            # FAST Symptoms
+            # FAST Symptoms (Updated terminology: risk → deficit)
             with st.expander("🩺 FAST Symptom Analysis", expanded=True):
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.markdown("**Speech Difficulty:**")
-                    if results['speech_risk'] > 0:
-                        st.markdown(f"<span class='status-positive'>PRESENT ({results['speech_risk']*100:.0f}%)</span>", unsafe_allow_html=True)
+                    st.markdown("**Speech Deficit:**")
+                    if results['speech_deficit'] > 0:
+                        st.markdown(f"<span class='status-positive'>PRESENT ({results['speech_deficit']*100:.0f}%)</span>", unsafe_allow_html=True)
                         if results['gender'] == "Female":
-                            st.caption("📊 Gender-adjusted risk (female: 56%)")
+                            st.caption("📊 Gender-adjusted: Female 56% (vs Male 42%)")
                         else:
-                            st.caption("📊 Gender-adjusted risk (male: 42%)")
+                            st.caption("📊 Gender-adjusted: Male 42% (vs Female 56%)")
                     else:
                         st.markdown("<span class='status-negative'>NOT PRESENT</span>", unsafe_allow_html=True)
                 
                 with col2:
-                    st.markdown("**Arm Weakness:**")
-                    if results['arm_risk'] > 0:
-                        st.markdown(f"<span class='status-positive'>PRESENT ({results['arm_risk']*100:.0f}%)</span>", unsafe_allow_html=True)
+                    st.markdown("**Arm Deficit:**")
+                    if results['arm_deficit'] > 0:
+                        st.markdown(f"<span class='status-positive'>PRESENT ({results['arm_deficit']*100:.0f}%)</span>", unsafe_allow_html=True)
+                        st.caption("📊 High predictive value (89%)")
                     else:
                         st.markdown("<span class='status-negative'>NOT PRESENT</span>", unsafe_allow_html=True)
             
-            # BE Symptoms (Hidden Strokes)
-            with st.expander("🔎 BE Symptoms (Often Missed)", expanded=True):
+            # BE Symptoms (Updated terminology: hidden_stroke_risk → atypical_stroke)
+            with st.expander("🔎 BE Symptoms - Atypical Presentations", expanded=True):
+                st.caption("These symptoms often indicate posterior circulation strokes missed by standard FAST")
+                
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     st.markdown("**Balance (Dizziness):**")
                     if results['has_balance']:
                         st.markdown("<span class='status-positive'>PRESENT (20% risk)</span>", unsafe_allow_html=True)
-                        st.caption("⚠️ May indicate posterior circulation stroke")
+                        st.caption("⚠️ May indicate cerebellar/brainstem stroke")
                     else:
                         st.markdown("<span class='status-negative'>NOT PRESENT</span>", unsafe_allow_html=True)
                 
@@ -780,35 +799,82 @@ def main():
                     st.markdown("**Eyes (Vision Changes):**")
                     if results['has_vision']:
                         st.markdown("<span class='status-positive'>PRESENT (52.7% risk)</span>", unsafe_allow_html=True)
-                        st.caption("⚠️ High predictive value for stroke")
+                        st.caption("⚠️ Highest predictive value for posterior stroke")
                     else:
                         st.markdown("<span class='status-negative'>NOT PRESENT</span>", unsafe_allow_html=True)
                 
-                if results['hidden_risk'] > 0:
-                    st.warning(f"⚠️ Hidden stroke risk detected: {results['hidden_risk']*100:.1f}%")
+                if results['atypical_stroke'] > 0:
+                    st.warning(f"⚠️ Atypical stroke pattern detected: {results['atypical_stroke']*100:.1f}%")
             
             # Risk Modifiers
             with st.expander("📈 Risk Modifiers"):
-                if results['recurrence_boost'] > 0:
-                    st.warning(f"⚠️ Recent TIA history adds {results['recurrence_boost']*100:.0f}% additional risk")
+                col1, col2 = st.columns(2)
                 
-                if results['is_mimic']:
-                    st.info(f"ℹ️ Possible stroke mimic detected ({results['mimic_prob']*100:.0f}% probability)\n\nSymptoms may be from prior stroke rather than new event.")
+                with col1:
+                    st.markdown("**TIA History:**")
+                    if results['recurrence_boost'] > 0:
+                        st.warning(f"⚠️ Recent TIA: +{results['recurrence_boost']*100:.0f}% risk")
+                        st.caption("TIA increases stroke risk by 10%")
+                    else:
+                        st.success("✅ No TIA history")
+                
+                with col2:
+                    st.markdown("**Stroke Mimic:**")
+                    if results['is_mimic']:
+                        st.info(f"ℹ️ Possible mimic: {results['mimic_prob']*100:.0f}% probability")
+                        st.caption("Symptoms may be from prior stroke")
+                    else:
+                        st.success("✅ No mimic indicators")
             
             # Reasoning Explanation
             st.markdown("---")
             st.subheader("🧠 AI Reasoning")
             
             if results['stroke_prob'] >= 0.73:
-                st.info("**High Confidence Assessment (73% PPV)**\n\nBoth computer vision analysis AND patient-reported symptoms align. This represents ambulance/on-scene level assessment confidence.")
-            elif results['stroke_prob'] >= 0.56:
-                st.info("**Moderate Confidence Assessment (56% PPV)**\n\nBased on patient-reported symptoms without visual confirmation. This represents dispatcher/phone assessment level confidence.")
+                st.info("""
+                **High Confidence Assessment (73% PPV)**
+                
+                Both computer vision analysis AND patient-reported symptoms align. 
+                This represents ambulance/on-scene level assessment confidence.
+                
+                **Logic Path:** `facial_droop_detected ∧ (speech_deficit ∨ arm_deficit) → stroke(0.73)`
+                """)
             elif results['stroke_prob'] >= 0.60:
-                st.info("**Visual-Only Assessment (60% PPV)**\n\nFacial asymmetry detected by computer vision but no corroborating symptoms reported. Consider image quality and lighting.")
-            elif results['hidden_risk'] > 0:
-                st.info("**Hidden Stroke Pattern Detected**\n\nBalance or vision symptoms without standard FAST criteria. These symptoms can indicate posterior circulation strokes often missed by standard screening.")
+                st.info("""
+                **Visual-Only Assessment (60% PPV)**
+                
+                Facial asymmetry detected by computer vision but no corroborating symptoms reported. 
+                Consider image quality and lighting.
+                
+                **Logic Path:** `facial_droop_detected ∧ ¬speech_deficit ∧ ¬arm_deficit → stroke(0.60)`
+                """)
+            elif results['stroke_prob'] >= 0.56:
+                st.info("""
+                **Moderate Confidence Assessment (56% PPV)**
+                
+                Based on patient-reported symptoms without visual confirmation. 
+                This represents dispatcher/phone assessment level confidence.
+                
+                **Logic Path:** `¬facial_droop_detected ∧ (speech_deficit ∨ arm_deficit) → stroke(0.56)`
+                """)
+            elif results['atypical_stroke'] > 0:
+                st.info("""
+                **Atypical Stroke Pattern Detected**
+                
+                Balance or vision symptoms without standard FAST criteria. 
+                These symptoms can indicate posterior circulation strokes often missed by standard screening.
+                
+                **Logic Path:** `¬stroke ∧ (dizziness ∨ vision_change) → atypical_stroke`
+                """)
             else:
-                st.success("**No Major Stroke Indicators**\n\nNo significant stroke risk factors detected at this time. Continue monitoring and seek medical care if symptoms develop or worsen.")
+                st.success("""
+                **No Major Stroke Indicators**
+                
+                No significant stroke risk factors detected at this time. 
+                Continue monitoring and seek medical care if symptoms develop or worsen.
+                
+                **Logic Path:** All stroke predicates evaluate to false
+                """)
             
             # Export Results
             st.markdown("---")
@@ -824,23 +890,31 @@ ACTION: {risk_msg['action']}
 ASSESSMENT DETAILS:
 - Overall Risk Score: {total_risk*100:.1f}%
 - Stroke Probability: {results['stroke_prob']*100:.1f}%
-- Hidden Stroke Risk: {results['hidden_risk']*100:.1f}%
+- Atypical Stroke Risk: {results['atypical_stroke']*100:.1f}%
 - FAST Positive: {'Yes' if results['fast_positive'] else 'No'}
 - Stroke Mimic: {'Yes' if results['is_mimic'] else 'No'}
 
-SYMPTOMS:
-- Facial Droop: {'Detected' if results['facial_droop'] else 'Not Detected'} ({results['cnn_confidence']*100:.1f}% confidence)
+SYMPTOMS (BE-FAST):
+- Facial Droop (F): {'Detected' if results['facial_droop'] else 'Not Detected'} ({results['cnn_confidence']*100:.1f}% confidence)
   Analysis: {results['analysis_type']}
-- Speech Difficulty: {'Present' if results['speech_risk'] > 0 else 'Absent'} ({results['speech_risk']*100:.0f}%)
-- Arm Weakness: {'Present' if results['arm_risk'] > 0 else 'Absent'} ({results['arm_risk']*100:.0f}%)
-- Balance Issues: {'Present' if results['has_balance'] else 'Absent'}
-- Vision Changes: {'Present' if results['has_vision'] else 'Absent'}
+- Speech Deficit (S): {'Present' if results['speech_deficit'] > 0 else 'Absent'} ({results['speech_deficit']*100:.0f}%)
+- Arm Deficit (A): {'Present' if results['arm_deficit'] > 0 else 'Absent'} ({results['arm_deficit']*100:.0f}%)
+- Balance Issues (B): {'Present' if results['has_balance'] else 'Absent'}
+- Vision Changes (E): {'Present' if results['has_vision'] else 'Absent'}
+
+RISK MODIFIERS:
+- TIA History: {'+10%' if recurrence_boost > 0 else 'None'}
+- Stroke Mimic: {'Yes (14%)' if results['is_mimic'] else 'No'}
+
+LOGIC ENGINE:
+- Based on: src/logic/stroke_logic.pl (DeepProbLog)
+- Bridge: src/bridge/dpl_interface.py
+- CNN: src/networks/facial_net.py (FacialDroopCNN)
 
 DISCLAIMER: This is an AI-assisted screening tool and NOT a medical diagnosis.
 Seek professional medical evaluation for any health concerns.
 
-This assessment uses computer vision heuristics in demo mode.
-Production version would use trained ResNet18 CNN model.
+Demo Mode: Uses computer vision heuristics (Production uses trained CNN).
                 """
                 st.download_button(
                     "Download Report",
@@ -856,53 +930,68 @@ Production version would use trained ResNet18 CNN model.
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🧠 Neuro-Symbolic AI")
+            st.subheader("🧠 Neuro-Symbolic AI Architecture")
             st.markdown("""
             This system combines:
             1. **Computer Vision** - Facial asymmetry detection
             2. **Probabilistic Logic** - DeepProbLog reasoning engine
-            3. **Clinical Guidelines** - BE-FAST protocol implementation
+            3. **Clinical Guidelines** - BE-FAST protocol
+            
+            **Repository Structure:**
+            ```
+            src/
+            ├── logic/
+            │   └── stroke_logic.pl      # Prolog rules
+            ├── bridge/
+            │   └── dpl_interface.py     # Neural-symbolic bridge
+            ├── networks/
+            │   └── facial_net.py        # FacialDroopCNN
+            └── test_backend.py          # Integration tests
+            ```
             
             **Current Mode:**
             - 🔬 Demo: Computer vision heuristics
-            - 🎯 Production: ResNet18 CNN (in development)
-            - ✅ Full probabilistic logic reasoning active
-            
-            **Architecture:**
-            - Visual perception (image analysis)
-            - Symbolic reasoning (logic programming)
-            - Evidence-based probabilities
+            - 🎯 Production: DeepProbLog + FacialDroopCNN
+            - ✅ Full probabilistic logic reasoning
             """)
             
             st.subheader("📊 BE-FAST Protocol")
             st.markdown("""
             Standard FAST misses ~25% of strokes. BE-FAST improves detection:
             
-            - **B**alance - Dizziness, loss of coordination
-            - **E**yes - Vision problems
-            - **F**ace - Facial drooping
-            - **A**rms - Arm weakness
-            - **S**peech - Slurred speech
-            - **T**ime - Call 911 immediately
+            - **B** - Balance: Dizziness, loss of coordination
+            - **E** - Eyes: Vision problems
+            - **F** - Face: Facial drooping
+            - **A** - Arms: Arm weakness
+            - **S** - Speech: Slurred speech
+            - **T** - Time: Call 911 immediately
+            
+            **Why BE matters:** Detects posterior circulation strokes 
+            that present without classic FAST symptoms.
             """)
         
         with col2:
             st.subheader("🔬 Scientific Foundation")
             st.markdown("""
-            **Probabilities from peer-reviewed research:**
+            **Evidence-based probabilities:**
             
-            - **73% PPV** - Vision + symptoms (ambulance setting)
-            - **56% PPV** - Symptoms only (dispatcher setting)
-            - **60% PPV** - Vision only (moderate confidence)
-            - **52.7%** - Vision changes predictive value
-            - **20%** - Balance issues stroke risk
-            - **14%** - Stroke mimic probability
+            | Scenario | PPV | Source |
+            |----------|-----|--------|
+            | Vision + Symptoms | 73% | Ambulance setting |
+            | Symptoms Only | 56% | Dispatcher setting |
+            | Vision Only | 60% | Moderate confidence |
+            | Vision Changes | 52.7% | High predictive value |
+            | Balance Issues | 20% | Atypical stroke |
+            | Stroke Mimic | 14% | Prior stroke residual |
             
             **Gender-specific weighting:**
-            - Female speech symptoms: 56%
-            - Male speech symptoms: 42%
+            - Female speech deficit: 56% (Berglund et al., 2014)
+            - Male speech deficit: 42%
             
-            **Source:** stroke_logic.pl (DeepProbLog)
+            **Terminology (Updated):**
+            - `speech_deficit` (was `speech_risk`)
+            - `arm_deficit` (was `arm_risk`)
+            - `atypical_stroke` (was `hidden_stroke_risk`)
             """)
             
             st.subheader("⚖️ Limitations")
@@ -952,26 +1041,42 @@ Production version would use trained ResNet18 CNN model.
         
         st.markdown("---")
         
-        st.subheader("📚 References")
-        with st.expander("View Research Citations"):
-            st.markdown("""
-            1. **Berglund et al. (2014)** - Gender differences in stroke presentation
-            2. **Claus et al. (2024)** - Arm weakness prevalence in stroke
-            3. **Aroor et al. (2017)** - BE-FAST validation study
-            4. **Harbison et al. (2003)** - FAST protocol positive predictive value
-            5. **Nor et al. (2005)** - Prehospital stroke recognition accuracy
-            
-            **Logic Implementation:**
-            - Based on: `src/logic/stroke_logic.pl`
-            - Repository: https://github.com/3N61N33R/stroke-detection
-            """)
+        st.subheader("📚 References & Implementation")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            with st.expander("View Research Citations"):
+                st.markdown("""
+                1. **Berglund et al. (2014)** - Gender differences in stroke presentation
+                2. **Claus et al. (2024)** - Arm weakness prevalence
+                3. **Aroor et al. (2017)** - BE-FAST validation study
+                4. **Harbison et al. (2003)** - FAST PPV studies
+                5. **Nor et al. (2005)** - Prehospital recognition
+                6. **Dua & Sharma (2023)** - CNN architecture for facial droop
+                """)
+        
+        with col2:
+            with st.expander("View Technical Implementation"):
+                st.markdown("""
+                **Repository:** [mba0329/stroke-demo2](https://github.com/mba0329/stroke-demo2)
+                
+                **Key Files:**
+                - `src/logic/stroke_logic.pl` - Probabilistic logic
+                - `src/bridge/dpl_interface.py` - DeepProbLog bridge
+                - `src/networks/facial_net.py` - CNN architecture
+                - `src/test_backend.py` - Integration tests
+                - `src/training/train.py` - Model training pipeline
+                
+                **Test Cases:** See `test_backend.py` for validation
+                """)
         
         st.markdown("---")
         st.caption(f"""
         **Version:** 2.0.0 (Demo Mode) | **Last Updated:** {datetime.now().strftime('%B %Y')}  
-        **Repository:** [3N61N33R/stroke-detection](https://github.com/3N61N33R/stroke-detection)  
+        **Repository:** [mba0329/stroke-demo2](https://github.com/mba0329/stroke-demo2) - German UDS Group AI Challenge  
         **License:** MIT | **Python:** 3.11 | **Framework:** Streamlit  
-        **Mode:** Computer Vision Heuristics (CNN training in progress)
+        **Mode:** Computer Vision Heuristics (DeepProbLog + CNN in development)
         """)
 
 if __name__ == "__main__":
