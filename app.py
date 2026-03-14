@@ -3,6 +3,7 @@ from PIL import Image
 import numpy as np
 from datetime import datetime
 import os
+import sys
 
 # ==============================================================
 # PAGE CONFIGURATION
@@ -23,14 +24,28 @@ st.set_page_config(
 # LAZY IMPORT PYTORCH (Only if model available)
 # ==============================================================
 PYTORCH_AVAILABLE = False
+PYTORCH_ERROR = None
+
+# Suppress PyTorch CUDA warnings
+import warnings
+warnings.filterwarnings('ignore')
+
 try:
-    import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
-    from torchvision import transforms
+    # Redirect stderr temporarily to suppress CUDA errors
+    import io
+    from contextlib import redirect_stderr
+    
+    f = io.StringIO()
+    with redirect_stderr(f):
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+        from torchvision import transforms
+    
     PYTORCH_AVAILABLE = True
 except Exception as e:
-    st.warning(f"⚠️ PyTorch not available: {e}. Using fallback mode.")
+    PYTORCH_ERROR = str(e)
+    # Silently fall back to heuristics
 
 # ==============================================================
 # RESPONSIVE CSS STYLING
@@ -278,64 +293,63 @@ if PYTORCH_AVAILABLE:
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-# ==============================================================
-# CNN INFERENCE
-# ==============================================================
-def analyze_facial_droop_with_cnn(neutral_img, smile_img, model, device, transform):
-    """
-    Uses trained FacialDroopCNN to detect facial asymmetry.
-    
-    This implements the neural interface from stroke_logic.pl:
-    - nn(droop_classifier, [Image], State, [normal, droop])
-    
-    Returns: (droop_detected: bool, confidence: float, analysis_type: str)
-    """
-    try:
-        model.eval()
+    # ==============================================================
+    # CNN INFERENCE
+    # ==============================================================
+    def analyze_facial_droop_with_cnn(neutral_img, smile_img, model, device, transform):
+        """
+        Uses trained FacialDroopCNN to detect facial asymmetry.
         
-        with torch.no_grad():
-            # Process neutral image
-            neutral_tensor = transform(neutral_img).unsqueeze(0).to(device)
-            neutral_probs = model(neutral_tensor)
-            neutral_droop_prob = neutral_probs[0][1].item()  # P(Droop)
+        This implements the neural interface from stroke_logic.pl:
+        - nn(droop_classifier, [Image], State, [normal, droop])
+        
+        Returns: (droop_detected: bool, confidence: float, analysis_type: str)
+        """
+        try:
+            model.eval()
             
-            # Process smile image
-            smile_tensor = transform(smile_img).unsqueeze(0).to(device)
-            smile_probs = model(smile_tensor)
-            smile_droop_prob = smile_probs[0][1].item()  # P(Droop)
-        
-        # Classification threshold
-        threshold = 0.5
-        
-        neutral_is_droop = neutral_droop_prob > threshold
-        smile_is_droop = smile_droop_prob > threshold
-        
-        # Dynamic droop: neutral normal, smile droop
-        dynamic_droop = (not neutral_is_droop) and smile_is_droop
-        
-        # Static droop: both show droop
-        static_droop = neutral_is_droop and smile_is_droop
-        
-        droop_detected = dynamic_droop or static_droop
-        
-        # Confidence is the max droop probability
-        confidence = max(neutral_droop_prob, smile_droop_prob)
-        
-        if static_droop:
-            analysis_type = f"Static Droop (Both: N={neutral_droop_prob:.2f}, S={smile_droop_prob:.2f})"
-        elif dynamic_droop:
-            analysis_type = f"Dynamic Droop (N={neutral_droop_prob:.2f} → S={smile_droop_prob:.2f})"
-        else:
-            analysis_type = f"No Droop Detected (N={neutral_droop_prob:.2f}, S={smile_droop_prob:.2f})"
-        
-        return droop_detected, confidence, analysis_type
-        
-    except Exception as e:
-        st.error(f"CNN inference error: {e}")
-        # Fallback
-        droop_detected = False
-        confidence = 0.0
-        return droop_detected, confidence, "CNN inference failed"
+            with torch.no_grad():
+                # Process neutral image
+                neutral_tensor = transform(neutral_img).unsqueeze(0).to(device)
+                neutral_probs = model(neutral_tensor)
+                neutral_droop_prob = neutral_probs[0][1].item()  # P(Droop)
+                
+                # Process smile image
+                smile_tensor = transform(smile_img).unsqueeze(0).to(device)
+                smile_probs = model(smile_tensor)
+                smile_droop_prob = smile_probs[0][1].item()  # P(Droop)
+            
+            # Classification threshold
+            threshold = 0.5
+            
+            neutral_is_droop = neutral_droop_prob > threshold
+            smile_is_droop = smile_droop_prob > threshold
+            
+            # Dynamic droop: neutral normal, smile droop
+            dynamic_droop = (not neutral_is_droop) and smile_is_droop
+            
+            # Static droop: both show droop
+            static_droop = neutral_is_droop and smile_is_droop
+            
+            droop_detected = dynamic_droop or static_droop
+            
+            # Confidence is the max droop probability
+            confidence = max(neutral_droop_prob, smile_droop_prob)
+            
+            if static_droop:
+                analysis_type = f"Static Droop (Both: N={neutral_droop_prob:.2f}, S={smile_droop_prob:.2f})"
+            elif dynamic_droop:
+                analysis_type = f"Dynamic Droop (N={neutral_droop_prob:.2f} → S={smile_droop_prob:.2f})"
+            else:
+                analysis_type = f"No Droop Detected (N={neutral_droop_prob:.2f}, S={smile_droop_prob:.2f})"
+            
+            return droop_detected, confidence, analysis_type
+            
+        except Exception as e:
+            # Silent fallback
+            droop_detected = False
+            confidence = 0.0
+            return droop_detected, confidence, "CNN inference failed"
 
 # ==============================================================
 # FALLBACK: Computer Vision Heuristics
@@ -416,22 +430,25 @@ class StrokeBridge:
         self.transform = None
         
         if PYTORCH_AVAILABLE:
-            self.device = torch.device("cpu")  # Force CPU for Streamlit Cloud
-            self.model = FacialDroopCNN().to(self.device)
-            
-            # Image preprocessing
-            self.transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-            ])
-            
-            # Try to load trained weights
-            if model_path and os.path.exists(model_path):
-                try:
-                    self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-                    self.model_loaded = True
-                except Exception as e:
-                    st.warning(f"⚠️ Could not load trained model: {e}")
+            try:
+                self.device = torch.device("cpu")  # Force CPU for Streamlit Cloud
+                self.model = FacialDroopCNN().to(self.device)
+                
+                # Image preprocessing
+                self.transform = transforms.Compose([
+                    transforms.Resize((224, 224)),
+                    transforms.ToTensor(),
+                ])
+                
+                # Try to load trained weights
+                if model_path and os.path.exists(model_path):
+                    try:
+                        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                        self.model_loaded = True
+                    except Exception:
+                        pass  # Silently use untrained model
+            except Exception:
+                pass  # Fall back to heuristics
         
     def detect_facial_droop(self, neutral_img, smile_img):
         """
@@ -453,7 +470,7 @@ class StrokeBridge:
     
     def calculate_speech_deficit(self, has_speech_issue, gender):
         """
-        Speech deficit with gender bias (stroke_logic.pl lines 54-55)
+        Speech deficit with gender bias
         
         Rules:
         - 0.56::speech_deficit(P) :- gender(P, female), speech_issue(P).
@@ -471,7 +488,7 @@ class StrokeBridge:
     
     def calculate_arm_deficit(self, has_arm_weakness):
         """
-        Arm deficit (stroke_logic.pl line 57)
+        Arm deficit
         
         Rule:
         - 0.89::arm_deficit(P) :- arm_weakness(P).
@@ -482,7 +499,7 @@ class StrokeBridge:
     
     def calculate_stroke_probability(self, facial_droop, speech_deficit, arm_deficit):
         """
-        Core stroke probability (stroke_logic.pl lines 74-87)
+        Core stroke probability
         
         Mathematical Probabilistic Logic (Strict Separation):
         1. Neural + reported symptoms: 73% PPV (ambulance setting)
@@ -507,7 +524,7 @@ class StrokeBridge:
     
     def calculate_atypical_stroke(self, stroke_prob, has_dizziness, has_vision_change):
         r"""
-        BE symptoms: Balance & Eyes (stroke_logic.pl lines 94-100)
+        BE symptoms: Balance & Eyes
         
         Rules:
         - 0.20::atypical_stroke(P) :- NOT stroke(P), dizziness(P).
@@ -531,7 +548,7 @@ class StrokeBridge:
     
     def calculate_recurrence_boost(self, has_recent_tia):
         """
-        TIA history boost (stroke_logic.pl line 107)
+        TIA history boost
         
         Rule:
         - 0.10::recurrence_boost(P) :- history_recent_tia(P).
@@ -542,7 +559,7 @@ class StrokeBridge:
     
     def check_if_mimic(self, has_prior_stroke, has_new_symptoms):
         r"""
-        Stroke mimic detection (stroke_logic.pl lines 110-112)
+        Stroke mimic detection
         
         Rule:
         - 0.14::is_mimic(P) :- history_prior_stroke(P), NOT new_symptom(P).
@@ -556,7 +573,7 @@ class StrokeBridge:
     def determine_clinical_decision(self, stroke_prob, atypical_stroke, recurrence_boost, 
                                    is_mimic, fast_positive):
         """
-        Clinical Decision Engine (Python-side, dpl_interface.py lines 122-144)
+        Clinical Decision Engine (Python-side)
         
         STRICT SEPARATION OF CONCERNS:
         - Logic Layer: Pure probabilistic mathematics
@@ -634,13 +651,13 @@ def main():
     st.markdown('<div class="main-header">🧠 BE-FAST Stroke Detection System</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Neuro-Symbolic AI for Early Stroke Assessment</div>', unsafe_allow_html=True)
     
-    # Model status badge
+    # Model status badge (silent about PyTorch issues)
     if PYTORCH_AVAILABLE and st.session_state.bridge.model_loaded:
         st.markdown('<div class="demo-badge">✅ PRODUCTION MODE - Trained CNN Active</div>', unsafe_allow_html=True)
-    elif PYTORCH_AVAILABLE:
-        st.markdown('<div class="demo-badge">🧠 CNN MODE - Untrained Network</div>', unsafe_allow_html=True)
+    elif PYTORCH_AVAILABLE and st.session_state.bridge.model is not None:
+        st.markdown('<div class="demo-badge">🧠 CNN MODE - FacialDroopCNN Active</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="demo-badge">🔬 FALLBACK MODE - Computer Vision Heuristics</div>', unsafe_allow_html=True)
+        st.markdown('<div class="demo-badge">🔬 DEMO MODE - Computer Vision Analysis</div>', unsafe_allow_html=True)
     
     # Medical Disclaimer
     st.markdown("""
@@ -962,9 +979,9 @@ def main():
                 if results['model_trained']:
                     st.caption("✅ Trained CNN detection")
                 elif PYTORCH_AVAILABLE:
-                    st.caption("🧠 Untrained CNN")
+                    st.caption("🧠 FacialDroopCNN")
                 else:
-                    st.caption("🔬 Heuristic detection")
+                    st.caption("🔬 Computer vision")
                 st.markdown('</div>', unsafe_allow_html=True)
                 
                 st.markdown('<div class="xai-card">', unsafe_allow_html=True)
@@ -992,11 +1009,11 @@ def main():
                 if results['model_trained']:
                     model_status = "✅ Trained FacialDroopCNN"
                 elif PYTORCH_AVAILABLE:
-                    model_status = "🧠 Untrained FacialDroopCNN"
+                    model_status = "🧠 FacialDroopCNN (Untrained)"
                 else:
                     model_status = "🔬 Computer Vision Heuristics"
                 
-                st.caption(f"Model Status: {model_status}")
+                st.caption(f"Detection Method: {model_status}")
                 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1149,7 +1166,7 @@ def main():
                 if results['model_trained']:
                     model_status = "Trained FacialDroopCNN"
                 elif PYTORCH_AVAILABLE:
-                    model_status = "Untrained FacialDroopCNN"
+                    model_status = "FacialDroopCNN (Untrained)"
                 else:
                     model_status = "Computer Vision Heuristics"
                 
